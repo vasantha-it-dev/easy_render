@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>EasyRenderer 3D — Browser-Based 3D Animation Studio</title>
+<link rel="preconnect" href="https://cdnjs.cloudflare.com" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com" /><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Sora:wght@300;400;600;700&family=Unbounded:wght@500;700&display=swap" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="orbs" aria-hidden="true"><i class="o1"></i><i class="o2"></i><i class="o3"></i><i class="o4"></i></div>
+
+<!-- ============================= SPLASH SCREEN ============================= -->
+<div id="splash">
+  <canvas id="splashCanvas"></canvas>
+  <div class="splash-content">
+    <div class="splash-logo">EASYRENDERER 3D</div>
+    <div class="splash-title">Animate in the browser.<br/>Render like it's <span>native.</span></div>
+    <p class="splash-tagline">A lightweight camera, lighting, and keyframe studio that runs entirely
+      in your tab — built for machines that can't run Blender or After Effects, without giving up the workflow.</p>
+    <div class="feature-row">
+      <div class="feature-chip"><i class="fa-solid fa-cube"></i><span>Import GLTF, OBJ, FBX</span></div>
+      <div class="feature-chip"><i class="fa-solid fa-video"></i><span>Catmull-Rom camera paths</span></div>
+      <div class="feature-chip"><i class="fa-solid fa-cloud"></i><span>Cloud sync &amp; resume</span></div>
+      <div class="feature-chip"><i class="fa-solid fa-diamond"></i><span>Timeline keyframing</span></div>
+      <div class="feature-chip"><i class="fa-solid fa-lightbulb"></i><span>Studio lighting rig</span></div>
+      <div class="feature-chip"><i class="fa-solid fa-download"></i><span>One-click video export</span></div>
+    </div>
+    <button id="openStudioBtn">Open Studio <i class="fa-solid fa-arrow-right" style="margin-left:8px;"></i></button>
+    <div class="splash-hint">Rendering happens on your machine. Projects sync to your private cloud workspace.</div>
+  </div>
+</div>
+
+<!-- ============================= STUDIO ============================= -->
+<div id="studio">
+<div class="w-full h-full flex flex-col" style="font-size:13px;">
+
+  <!-- TOP BAR -->
+  <div class="flex items-center justify-between px-3" id="topBar" style="height:44px; background:var(--bg-1); border-bottom:1px solid var(--border); flex-shrink:0;">
+    <div class="flex items-center gap-4">
+      <div class="flex items-center gap-2">
+        <i class="fa-solid fa-cube" style="color:var(--accent); font-size:15px;"></i>
+        <span style="font-weight:700; font-size:13px; letter-spacing:.01em;">EasyRenderer<span style="color:var(--accent);">3D</span></span>
+      </div>
+      <div class="divider-v" style="height:22px;"></div>
+      <input id="projectTitle" class="num-field" style="text-align:left; width:180px; background:transparent; border-color:transparent;" value="Untitled Project" onfocus="this.style.borderColor='var(--border)'" onblur="this.style.borderColor='transparent'"/>
+      <div class="relative">
+        <button id="fileMenuBtn" class="btn-ghost" style="padding:6px 10px;">File <i class="fa-solid fa-caret-down" style="margin-left:6px; font-size:9px;"></i></button>
+        <div id="fileMenu" class="dropdown-menu">
+          <button id="menuProjects"><i class="fa-solid fa-clock-rotate-left" style="width:14px;"></i> Recent Projects…</button>
+          <button id="menuNewProject"><i class="fa-solid fa-file-circle-plus" style="width:14px;"></i> New Cloud Project</button>
+          <hr/>
+          <button id="menuImport"><i class="fa-solid fa-file-import" style="width:14px;"></i> Import Model…</button>
+          <button id="menuAddCamera"><i class="fa-solid fa-video" style="width:14px;"></i> Add Camera</button>
+          <hr/>
+          <button id="menuSave"><i class="fa-solid fa-floppy-disk" style="width:14px;"></i> Save Project (.json)</button>
+          <button id="menuLoad"><i class="fa-solid fa-folder-open" style="width:14px;"></i> Load Project…</button>
+          <button id="menuExportGltf"><i class="fa-solid fa-cubes" style="width:14px;"></i> Export Scene (.glb)</button>
+          <hr/>
+          <button id="menuReset"><i class="fa-solid fa-rotate-left" style="width:14px;"></i> Reset Workspace</button>
+        </div>
+      </div>
+      <div class="divider-v" style="height:22px;"></div>
+      <button id="undoBtn" class="tool-btn" style="width:32px; height:32px;" title="Undo (Ctrl+Z)"><i class="fa-solid fa-rotate-left"></i></button>
+      <button id="redoBtn" class="tool-btn" style="width:32px; height:32px;" title="Redo (Ctrl+Shift+Z)"><i class="fa-solid fa-rotate-right"></i></button>
+      <button id="snapBtn" class="tool-btn" style="width:32px; height:32px;" title="Toggle Snapping"><i class="fa-solid fa-magnet"></i></button>
+      <button id="statsBtn" class="tool-btn" style="width:32px; height:32px;" title="Toggle Stats"><i class="fa-solid fa-chart-simple"></i></button>
+      <button id="helpBtn" class="tool-btn" style="width:32px; height:32px;" title="Keyboard Shortcuts (?)"><i class="fa-solid fa-question"></i></button>
+    </div>
+    <div class="flex items-center gap-3">
+      <button id="cloudStatus" class="cloud-pill" data-state="off" title="Cloud sync. Click for Recent Projects"><i class="fa-solid fa-cloud"></i><span>Not signed in</span></button>
+      <div id="userChip" class="user-chip" style="display:none;"><i class="fa-solid fa-user"></i><span id="userEmail"></span><button id="signOutBtn" title="Sign out"><i class="fa-solid fa-right-from-bracket"></i></button></div>
+      <div id="recIndicator"><span class="rec-dot"></span><span id="recTime">00:00</span> REC</div>
+      <button id="renderSettingsBtn" class="tool-btn" style="width:32px; height:32px;" title="Render Settings"><i class="fa-solid fa-sliders"></i></button>
+      <button id="exportBtn" class="btn-primary"><i class="fa-solid fa-download" style="margin-right:7px;"></i>Export &amp; Download Video</button>
+    </div>
+  </div>
+
+  <!-- MAIN AREA -->
+  <div class="flex flex-1 min-h-0">
+
+    <!-- LEFT SIDEBAR -->
+    <div class="flex flex-col items-center py-2 gap-1" style="width:52px; background:var(--bg-1); border-right:1px solid var(--border); flex-shrink:0;">
+      <div class="tool-btn active" data-tool="select" title="Select (Q)"><i class="fa-solid fa-arrow-pointer"></i></div>
+      <div class="tool-btn" data-tool="translate" title="Move (W)"><i class="fa-solid fa-up-down-left-right"></i></div>
+      <div class="tool-btn" data-tool="rotate" title="Rotate (E)"><i class="fa-solid fa-rotate"></i></div>
+      <div class="tool-btn" data-tool="scale" title="Scale (R)"><i class="fa-solid fa-expand"></i></div>
+      <div style="height:1px; width:28px; background:var(--border); margin:6px 0;"></div>
+
+      <div class="relative">
+        <div class="tool-btn" id="toolAddPrimitive" title="Add Primitive"><i class="fa-solid fa-shapes"></i></div>
+        <div id="primitiveMenu" class="dropdown-menu" style="left:44px; top:0;">
+          <button data-primitive="cube"><i class="fa-solid fa-cube" style="width:14px;"></i> Cube</button>
+          <button data-primitive="sphere"><i class="fa-regular fa-circle" style="width:14px;"></i> Sphere</button>
+          <button data-primitive="cylinder"><i class="fa-solid fa-database" style="width:14px;"></i> Cylinder</button>
+          <button data-primitive="cone"><i class="fa-solid fa-icicles" style="width:14px;"></i> Cone</button>
+          <button data-primitive="torus"><i class="fa-solid fa-ring" style="width:14px;"></i> Torus</button>
+          <button data-primitive="plane"><i class="fa-regular fa-square" style="width:14px;"></i> Plane</button>
+        </div>
+      </div>
+
+      <div class="tool-btn" id="toolAddCamera" title="Add Camera"><i class="fa-solid fa-video"></i></div>
+
+      <div class="relative">
+        <div class="tool-btn" id="toolAddLight" title="Add Light"><i class="fa-solid fa-lightbulb"></i></div>
+        <div id="lightMenu" class="dropdown-menu" style="left:44px; top:0;">
+          <button data-light="ambient"><i class="fa-solid fa-circle-half-stroke" style="width:14px;"></i> Ambient</button>
+          <button data-light="directional"><i class="fa-solid fa-sun" style="width:14px;"></i> Directional</button>
+          <button data-light="point"><i class="fa-solid fa-lightbulb" style="width:14px;"></i> Point</button>
+          <button data-light="spot"><i class="fa-solid fa-flashlight" style="width:14px;"></i> Spot</button>
+          <hr/>
+          <button id="menuThreePoint"><i class="fa-solid fa-layer-group" style="width:14px;"></i> Three-Point Rig</button>
+        </div>
+      </div>
+
+      <div style="height:1px; width:28px; background:var(--border); margin:6px 0;"></div>
+      <div class="tool-btn" id="toolDuplicate" title="Duplicate (Ctrl+D)"><i class="fa-regular fa-clone"></i></div>
+      <div class="tool-btn" id="toolDelete" title="Delete Selected (Del)"><i class="fa-solid fa-trash"></i></div>
+      <div class="tool-btn" id="toolFrame" title="Frame Selected (F)"><i class="fa-solid fa-crosshairs"></i></div>
+    </div>
+
+    <!-- CENTER: viewport + hierarchy -->
+    <div class="flex flex-col flex-1 min-w-0">
+      <div class="flex flex-1 min-h-0">
+        <!-- hierarchy -->
+        <div class="flex flex-col" style="width:210px; background:var(--bg-1); border-right:1px solid var(--border); flex-shrink:0;">
+          <div class="panel-label px-3 pt-3">SCENE HIERARCHY</div>
+          <div id="hierarchyList" class="flex-1 overflow-y-auto" style="padding-bottom:8px;"></div>
+        </div>
+        <!-- viewport -->
+        <div id="viewportContainer" class="flex-1 min-w-0 relative">
+          <canvas id="viewport"></canvas>
+          <div id="dropOverlay"><span><i class="fa-solid fa-file-arrow-down" style="margin-right:8px;"></i>Drop .gltf / .glb / .obj / .fbx to import</span></div>
+          <div class="absolute" style="top:8px; left:10px; font-family:var(--font-mono); font-size:10px; color:var(--text-2); pointer-events:none;">
+            <div id="fpsCounter">60 FPS</div>
+          </div>
+          <div id="statsPanel" class="hidden" style="position:absolute; top:8px; right:10px; font-family:var(--font-mono); font-size:10px; color:var(--text-1); background:rgba(18,18,18,.75); border:1px solid var(--border); padding:8px 10px; line-height:1.7; pointer-events:none;">
+            <div>Objects: <span id="statObjects">0</span></div>
+            <div>Triangles: <span id="statTris">0</span></div>
+            <div>Vertices: <span id="statVerts">0</span></div>
+            <div>Draw calls: <span id="statCalls">0</span></div>
+          </div>
+          <div class="absolute" style="bottom:8px; left:10px; font-family:var(--font-mono); font-size:10px; color:var(--text-2); pointer-events:none;">
+            GRID 1m · <span id="selInfo">No selection</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT PANEL: Inspector -->
+    <div class="flex flex-col" style="width:280px; background:var(--bg-1); border-left:1px solid var(--border); flex-shrink:0;">
+      <div class="flex" style="border-bottom:1px solid var(--border);">
+        <div class="tab-btn active" data-tab="transform">TRANSFORM</div>
+        <div class="tab-btn" data-tab="material">MATERIAL</div>
+        <div class="tab-btn" data-tab="lighting">LIGHTING</div>
+        <div class="tab-btn" data-tab="environment">ENV</div>
+      </div>
+      <div class="flex-1 overflow-y-auto">
+
+        <!-- TRANSFORM TAB -->
+        <div class="tab-panel" data-panel="transform">
+          <div class="panel-section">
+            <div class="panel-label">OBJECT NAME</div>
+            <input id="objName" class="num-field" style="text-align:left;" disabled/>
+          </div>
+          <div class="panel-section flex items-center justify-between">
+            <div class="panel-label" style="margin-bottom:0;">VISIBLE</div>
+            <input id="objVisible" type="checkbox" checked/>
+          </div>
+          <div class="panel-section">
+            <div class="panel-label">POSITION</div>
+            <div class="grid grid-cols-3 gap-2">
+              <input id="posX" type="number" step="0.1" class="num-field" data-axis="x" data-prop="position" disabled/>
+              <input id="posY" type="number" step="0.1" class="num-field" data-axis="y" data-prop="position" disabled/>
+              <input id="posZ" type="number" step="0.1" class="num-field" data-axis="z" data-prop="position" disabled/>
+            </div>
+          </div>
+          <div class="panel-section">
+            <div class="panel-label">ROTATION (°)</div>
+            <div class="grid grid-cols-3 gap-2">
+              <input id="rotX" type="number" step="1" class="num-field" data-axis="x" data-prop="rotation" disabled/>
+              <input id="rotY" type="number" step="1" class="num-field" data-axis="y" data-prop="rotation" disabled/>
+              <input id="rotZ" type="number" step="1" class="num-field" data-axis="z" data-prop="rotation" disabled/>
+            </div>
+          </div>
+          <div class="panel-section">
+            <div class="panel-label">SCALE</div>
+            <div class="grid grid-cols-3 gap-2">
+              <input id="scaleX" type="number" step="0.1" class="num-field" data-axis="x" data-prop="scale" disabled/>
+              <input id="scaleY" type="number" step="0.1" class="num-field" data-axis="y" data-prop="scale" disabled/>
+              <input id="scaleZ" type="number" step="0.1" class="num-field" data-axis="z" data-prop="scale" disabled/>
+            </div>
+          </div>
+          <div class="panel-section hidden" id="cameraFieldsWrap">
+            <div class="panel-label">CAMERA (FOV / NEAR / FAR)</div>
+            <div class="grid grid-cols-3 gap-2">
+              <input id="camFov" type="number" step="1" min="1" max="170" class="num-field"/>
+              <input id="camNear" type="number" step="0.01" min="0.001" class="num-field"/>
+              <input id="camFar" type="number" step="10" min="1" class="num-field"/>
+            </div>
+            <button id="setActiveCamBtn" class="btn-ghost w-full mt-2"><i class="fa-solid fa-video" style="margin-right:6px;"></i>Set as Active Camera</button>
+          </div>
+        </div>
+
+        <!-- MATERIAL TAB -->
+        <div class="tab-panel hidden" data-panel="material">
+          <div class="panel-section" id="materialEmpty">
+            <div style="color:var(--text-2); font-size:11.5px; text-align:center; padding:20px 0;">Select a mesh to edit its material.</div>
+          </div>
+          <div id="materialFields" class="hidden">
+            <div class="panel-section flex items-center justify-between">
+              <div class="panel-label" style="margin-bottom:0;">BASE COLOR</div>
+              <input id="matColor" type="color" value="#c9c9c9"/>
+            </div>
+            <div class="panel-section">
+              <div class="panel-label">ROUGHNESS <span id="roughVal" style="color:var(--text-1);"></span></div>
+              <input id="matRough" type="range" min="0" max="1" step="0.01" value="0.6"/>
+            </div>
+            <div class="panel-section">
+              <div class="panel-label">METALNESS <span id="metalVal" style="color:var(--text-1);"></span></div>
+              <input id="matMetal" type="range" min="0" max="1" step="0.01" value="0.1"/>
+            </div>
+            <div class="panel-section">
+              <div class="panel-label">OPACITY <span id="opacityVal" style="color:var(--text-1);"></span></div>
+              <input id="matOpacity" type="range" min="0" max="1" step="0.01" value="1"/>
+            </div>
+            <div class="panel-section flex items-center justify-between">
+              <div class="panel-label" style="margin-bottom:0;">EMISSIVE</div>
+              <input id="matEmissive" type="color" value="#000000"/>
+            </div>
+            <div class="panel-section">
+              <div class="panel-label">EMISSIVE INTENSITY <span id="emissiveVal" style="color:var(--text-1);"></span></div>
+              <input id="matEmissiveIntensity" type="range" min="0" max="5" step="0.05" value="1"/>
+            </div>
+            <div class="panel-section">
+              <div class="panel-label">TEXTURE MAPS</div>
+              <div class="flex flex-col gap-2">
+                <label class="flex items-center justify-between" style="font-size:11px; color:var(--text-1);">Base Color
+                  <input id="mapColor" type="file" accept="image/*" style="max-width:130px; font-size:10px;"/>
+                </label>
+                <label class="flex items-center justify-between" style="font-size:11px; color:var(--text-1);">Normal
+                  <input id="mapNormal" type="file" accept="image/*" style="max-width:130px; font-size:10px;"/>
+                </label>
+                <label class="flex items-center justify-between" style="font-size:11px; color:var(--text-1);">Roughness
+                  <input id="mapRough" type="file" accept="image/*" style="max-width:130px; font-size:10px;"/>
+                </label>
+                <label class="flex items-center justify-between" style="font-size:11px; color:var(--text-1);">Metalness
+                  <input id="mapMetal" type="file" accept="image/*" style="max-width:130px; font-size:10px;"/>
+                </label>
+              </div>
+              <button id="clearTexBtn" class="btn-ghost w-full mt-2" style="display:none;">Remove All Maps</button>
+            </div>
+            <div class="panel-section flex items-center justify-between">
+              <div class="panel-label" style="margin-bottom:0;">CAST SHADOW</div>
+              <input id="matShadow" type="checkbox" checked/>
+            </div>
+          </div>
+        </div>
+
+        <!-- LIGHTING TAB -->
+        <div class="tab-panel hidden" data-panel="lighting">
+          <div class="panel-section" id="lightingEmpty">
+            <div style="color:var(--text-2); font-size:11.5px; text-align:center; padding:20px 0;">Select a light, or add one from the left toolbar.</div>
+          </div>
+          <div id="lightingFields" class="hidden">
+            <div class="panel-section">
+              <div class="panel-label">TYPE</div>
+              <div id="lightTypeLabel" style="font-family:var(--font-mono); font-size:12px; color:var(--accent-2);"></div>
+            </div>
+            <div class="panel-section flex items-center justify-between">
+              <div class="panel-label" style="margin-bottom:0;">COLOR</div>
+              <input id="lightColor" type="color" value="#ffffff"/>
+            </div>
+            <div class="panel-section">
+              <div class="panel-label">INTENSITY <span id="lightIntVal" style="color:var(--text-1);"></span></div>
+              <input id="lightIntensity" type="range" min="0" max="5" step="0.05" value="1"/>
+            </div>
+            <div class="panel-section" id="lightDistWrap">
+              <div class="panel-label">RANGE / DISTANCE <span id="lightDistVal" style="color:var(--text-1);"></span></div>
+              <input id="lightDistance" type="range" min="0" max="50" step="0.5" value="0"/>
+            </div>
+            <div class="panel-section" id="lightAngleWrap">
+              <div class="panel-label">CONE ANGLE <span id="lightAngleVal" style="color:var(--text-1);"></span></div>
+              <input id="lightAngle" type="range" min="5" max="90" step="1" value="35"/>
+            </div>
+            <div class="panel-section flex items-center justify-between" id="lightShadowWrap">
+              <div class="panel-label" style="margin-bottom:0;">CAST SHADOW</div>
+              <input id="lightShadow" type="checkbox" checked/>
+            </div>
+            <div class="panel-section" id="lightSoftWrap">
+              <div class="panel-label">SHADOW SOFTNESS <span id="lightSoftVal" style="color:var(--text-1);"></span></div>
+              <input id="lightSoft" type="range" min="0" max="5" step="0.1" value="1"/>
+            </div>
+          </div>
+        </div>
+
+        <!-- ENVIRONMENT TAB -->
+        <div class="tab-panel hidden" data-panel="environment">
+          <div class="panel-section flex items-center justify-between">
+            <div class="panel-label" style="margin-bottom:0;">BACKGROUND</div>
+            <input id="envBgColor" type="color" value="#0c0c0c"/>
+          </div>
+          <div class="panel-section flex items-center justify-between">
+            <div class="panel-label" style="margin-bottom:0;">SHOW GRID</div>
+            <input id="envGrid" type="checkbox" checked/>
+          </div>
+          <div class="panel-section flex items-center justify-between">
+            <div class="panel-label" style="margin-bottom:0;">FOG</div>
+            <input id="envFogEnabled" type="checkbox" checked/>
+          </div>
+          <div class="panel-section flex items-center justify-between">
+            <div class="panel-label" style="margin-bottom:0;">FOG COLOR</div>
+            <input id="envFogColor" type="color" value="#0c0c0c"/>
+          </div>
+          <div class="panel-section">
+            <div class="panel-label">FOG NEAR <span id="fogNearVal" style="color:var(--text-1);"></span></div>
+            <input id="envFogNear" type="range" min="0" max="60" step="1" value="30"/>
+          </div>
+          <div class="panel-section">
+            <div class="panel-label">FOG FAR <span id="fogFarVal" style="color:var(--text-1);"></span></div>
+            <input id="envFogFar" type="range" min="10" max="200" step="1" value="90"/>
+          </div>
+          <div class="panel-section">
+            <div class="panel-label">GROUND SHADOW OPACITY <span id="groundOpVal" style="color:var(--text-1);"></span></div>
+            <input id="envGroundOpacity" type="range" min="0" max="1" step="0.01" value="0.35"/>
+          </div>
+          <div class="panel-section flex items-center justify-between">
+            <div class="panel-label" style="margin-bottom:0;">STUDIO REFLECTIONS (IBL)</div>
+            <input id="envIBL" type="checkbox" checked/>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+  <!-- BOTTOM PANEL: TIMELINE -->
+  <div class="flex flex-col" style="height:168px; background:var(--bg-1); border-top:1px solid var(--border); flex-shrink:0;">
+    <div class="flex items-center gap-3 px-3 flex-wrap" style="min-height:34px; border-bottom:1px solid var(--border);">
+      <button id="playBtn" class="tool-btn" style="width:30px; height:30px;" title="Play/Pause (Space)"><i class="fa-solid fa-play"></i></button>
+      <button id="stopBtn" class="tool-btn" style="width:30px; height:30px;" title="Stop"><i class="fa-solid fa-stop"></i></button>
+      <button id="loopBtn" class="tool-btn" style="width:30px; height:30px;" title="Loop"><i class="fa-solid fa-repeat"></i></button>
+      <div class="divider-v" style="height:20px;"></div>
+      <div id="timecode" style="font-family:var(--font-mono); font-size:12px; color:var(--text-0); width:78px;">00:00:00</div>
+      <div class="divider-v" style="height:20px;"></div>
+      <div class="flex items-center gap-2">
+        <span style="font-size:10px; color:var(--text-2);">DURATION</span>
+        <input id="durationInput" type="number" min="1" max="120" value="10" class="num-field" style="width:50px;"/>
+        <span style="font-size:10px; color:var(--text-2);">sec</span>
+      </div>
+      <div class="divider-v" style="height:20px;"></div>
+      <span style="font-size:10px; color:var(--text-2);">EASE</span>
+      <select id="defaultEase" class="num-field" style="width:100px;">
+        <option value="smooth">Smooth</option>
+        <option value="linear">Linear</option>
+        <option value="easeIn">Ease In</option>
+        <option value="easeOut">Ease Out</option>
+      </select>
+      <button id="addKeyBtn" class="btn-ghost"><i class="fa-solid fa-plus" style="margin-right:5px;"></i>Add Keyframe</button>
+      <button id="clearKeyBtn" class="btn-ghost">Clear Object Keys</button>
+      <div class="divider-v" style="height:20px;"></div>
+      <span style="font-size:10px; color:var(--text-2);">CAMERA PATH</span>
+      <select id="curveType" class="num-field" style="width:110px;">
+        <option value="catmullrom">Smooth Bezier</option>
+        <option value="linear">Linear</option>
+      </select>
+      <button id="addPathPointBtn" class="btn-ghost"><i class="fa-solid fa-location-dot" style="margin-right:5px;"></i>Add Path Point</button>
+      <button id="previewPathBtn" class="btn-ghost"><i class="fa-solid fa-route" style="margin-right:5px;"></i>Preview Path</button>
+      <button id="clearPathBtn" class="btn-ghost">Clear Path</button>
+    </div>
+    <div class="px-3 pt-2 pb-1 flex-1 min-h-0 flex flex-col">
+      <input id="scrubber" type="range" min="0" max="1000" value="0" style="width:100%;"/>
+      <div id="keyTrack" class="relative flex-1 mt-2" style="background:var(--bg-0); border:1px solid var(--border); border-radius:2px; min-height:52px;"></div>
+    </div>
+  </div>
+
+</div>
+</div>
+
+<!-- ============================= MODALS ============================= -->
+<div id="modalOverlay" class="modal-overlay hidden">
+  <div id="helpModal" class="modal-card hidden">
+    <div class="modal-header">Keyboard Shortcuts <button class="modal-close" data-close>&times;</button></div>
+    <div class="modal-body">
+      <div class="shortcut-row"><span>Select tool</span><kbd>Q</kbd></div>
+      <div class="shortcut-row"><span>Move tool</span><kbd>W</kbd></div>
+      <div class="shortcut-row"><span>Rotate tool</span><kbd>E</kbd></div>
+      <div class="shortcut-row"><span>Scale tool</span><kbd>R</kbd></div>
+      <div class="shortcut-row"><span>Frame selected</span><kbd>F</kbd></div>
+      <div class="shortcut-row"><span>Duplicate selected</span><kbd>Ctrl+D</kbd></div>
+      <div class="shortcut-row"><span>Delete selected</span><kbd>Del</kbd></div>
+      <div class="shortcut-row"><span>Undo</span><kbd>Ctrl+Z</kbd></div>
+      <div class="shortcut-row"><span>Redo</span><kbd>Ctrl+Shift+Z</kbd></div>
+      <div class="shortcut-row"><span>Play / Pause timeline</span><kbd>Space</kbd></div>
+      <div class="shortcut-row"><span>Toggle this help</span><kbd>?</kbd></div>
+    </div>
+  </div>
+  <div id="projectsModal" class="modal-card hidden" style="width:480px;">
+    <div class="modal-header">Recent Projects <button class="modal-close" data-close>&times;</button></div>
+    <div class="modal-body">
+      <div id="dashSub" style="font-size:11.5px;color:var(--text-2);margin-bottom:10px;"></div>
+      <button id="dashNewBtn" class="btn-primary w-full" style="margin-bottom:8px;"><i class="fa-solid fa-plus" style="margin-right:7px;"></i>New 3D Project</button>
+      <div id="projectsList" style="font-size:12px;color:var(--text-1);">Loading…</div>
+    </div>
+  </div>
+  <div id="authModal" class="modal-card hidden">
+    <div class="modal-header">Sign in to EasyRenderer 3D <button class="modal-close" data-close>&times;</button></div>
+    <div class="modal-body">
+      <button id="googleBtn" type="button" class="btn-ghost w-full google-btn"><i class="fa-brands fa-google" style="margin-right:8px;"></i>Continue with Google</button>
+      <div class="or-row"><span>or use email</span></div>
+      <form id="authForm" novalidate>
+        <div class="panel-label">EMAIL</div>
+        <input id="authEmail" type="email" autocomplete="email" class="num-field mb-2" style="text-align:left;" placeholder="you@example.com"/>
+        <div class="panel-label">PASSWORD</div>
+        <input id="authPassword" type="password" autocomplete="current-password" class="num-field mb-2" style="text-align:left;" placeholder="••••••••"/>
+        <div id="authMsg" class="auth-msg"></div>
+        <button id="authSubmit" type="submit" class="btn-primary w-full">Sign in</button>
+      </form>
+      <button id="authToggle" type="button" class="link-btn">No account? Create one</button>
+    </div>
+  </div>
+  <div id="renderModal" class="modal-card hidden">
+    <div class="modal-header">Render &amp; Export Settings <button class="modal-close" data-close>&times;</button></div>
+    <div class="modal-body">
+      <div class="panel-label">RESOLUTION</div>
+      <select id="resPreset" class="num-field mb-2" style="text-align:left;">
+        <option value="854x480">854 × 480 (SD)</option>
+        <option value="1280x720" selected>1280 × 720 (HD)</option>
+        <option value="1920x1080">1920 × 1080 (Full HD)</option>
+        <option value="2560x1440">2560 × 1440 (QHD)</option>
+        <option value="custom">Custom…</option>
+      </select>
+      <div id="customResWrap" class="grid grid-cols-2 gap-2 mb-3 hidden">
+        <input id="customResW" type="number" class="num-field" placeholder="Width" value="1280"/>
+        <input id="customResH" type="number" class="num-field" placeholder="Height" value="720"/>
+      </div>
+      <div class="panel-label">FRAME RATE</div>
+      <select id="fpsSelect" class="num-field mb-2" style="text-align:left;">
+        <option value="24">24 fps (cinematic)</option>
+        <option value="30" selected>30 fps</option>
+        <option value="60">60 fps</option>
+      </select>
+      <div class="panel-label">BITRATE <span id="bitrateVal" style="color:var(--text-1);"></span></div>
+      <input id="bitrateRange" type="range" min="2" max="40" step="1" value="12" class="mb-3"/>
+      <button id="applyRenderSettings" class="btn-primary w-full">Apply Settings</button>
+    </div>
+  </div>
+</div>
+
+<!-- hidden file inputs -->
+<input type="file" id="modelFileInput" accept=".gltf,.glb,.obj,.fbx" style="display:none;"/>
+<input type="file" id="projectFileInput" accept=".json" style="display:none;"/>
+
+<!-- ============================= LIBRARIES ============================= -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2.45.4",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
