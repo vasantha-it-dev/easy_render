@@ -2198,18 +2198,29 @@ async function syncTick() {
 
   // Hide grid, gizmo, light/camera helpers and camera-path lines so only the scene objects are recorded
   let hiddenForExport = [];
+  const HELPER_TYPES = new Set([
+    'DirectionalLightHelper', 'PointLightHelper', 'SpotLightHelper', 'HemisphereLightHelper',
+    'CameraHelper', 'GridHelper', 'PolarGridHelper', 'AxesHelper', 'BoxHelper', 'Box3Helper',
+    'PlaneHelper', 'SkeletonHelper'
+  ]);
+  // Hides every editor-only object (grid, gizmo, light/camera helpers, path lines). Safe to call every frame.
   function hideHelpersForExport() {
-    hiddenForExport = [];
     if (App.renderSettings.hideHelpers === false) return;
-    const hide = (o) => { if (o && o.visible) { hiddenForExport.push(o); o.visible = false; } };
+    const hide = (o) => {
+      if (o && o.visible) { o.visible = false; if (!hiddenForExport.includes(o)) hiddenForExport.push(o); }
+    };
     hide(App.grid);
     hide(App.transform);
+    App.cameraPath.markers.forEach(hide);
+    hide(App.cameraPath.line);
+    App.scene.traverse((o) => {
+      if (o === App.ground) return;
+      if (HELPER_TYPES.has(o.type) || o.isTransformControls || (o.userData && o.userData.__helper === true)) hide(o);
+    });
     App.sceneObjects.forEach((e) => {
       const h = e.object3D.userData.__helper;
       if (h && typeof h === 'object') hide(h);
     });
-    App.cameraPath.markers.forEach(hide);
-    hide(App.cameraPath.line);
   }
   function restoreHelpersAfterExport() {
     hiddenForExport.forEach((o) => { o.visible = true; });
@@ -2222,6 +2233,10 @@ async function syncTick() {
     const g = document.getElementById('envGrid');
     if (App.grid && g) App.grid.visible = g.checked;
   }
+  // Lets the render loop re-assert "clean" every frame while recording
+  App._enforceCleanExport = function () {
+    if (App.recorder.recording) hideHelpersForExport();
+  };
 
   // Export progress bar helpers
   function ensureExportBar() {
@@ -2668,6 +2683,8 @@ function renderFrame() {
     FX.dust.rotation.y = t * 0.012;
     FX.dust.position.y = Math.sin(t * 0.25) * 0.25;
   }
+
+  if (App.recorder.recording && App._enforceCleanExport) App._enforceCleanExport();
 
   if (FX.ready && FX.params.enabled) {
     App.renderer.getSize(FX.size);
