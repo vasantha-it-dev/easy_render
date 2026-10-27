@@ -45,7 +45,7 @@ const App = {
   },
 
   recorder: { mediaRecorder: null, chunks: [], recording: false, startTime: 0, endAt: 0, failsafe: null, prevLoop: undefined },
-  renderSettings: { width: 1280, height: 720, fps: 30, bitrate: 12 },
+  renderSettings: { width: 1280, height: 720, fps: 30, bitrate: 12, format: 'mp4', hideHelpers: true },
   undo: { stack: [], redoStack: [], suppress: false },
   snapping: false,
   tool: 'select',
@@ -2170,20 +2170,57 @@ async function syncTick() {
   function getSupportedExportMimeType() {
     if (!window.MediaRecorder) return '';
 
-    const formats = [
-      'video/webm;codecs=vp9',
-      'video/webm;codecs=vp8',
-      'video/webm',
+    const mp4 = [
+      'video/mp4;codecs=avc1.640028',
+      'video/mp4;codecs=avc1.42E01E',
+      'video/mp4;codecs=avc1',
       'video/mp4'
     ];
+    const webm = [
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm'
+    ];
+    const wantMp4 = (App.renderSettings.format || 'mp4') === 'mp4';
+    const formats = wantMp4 ? mp4.concat(webm) : webm.concat(mp4);
 
     for (const format of formats) {
       if (MediaRecorder.isTypeSupported(format)) {
+        if (wantMp4 && !format.startsWith('video/mp4')) {
+          toast('This browser cannot record MP4 directly, so the video will be saved as WebM.');
+        }
         return format;
       }
     }
 
     return '';
+  }
+
+  // Hide grid, gizmo, light/camera helpers and camera-path lines so only the scene objects are recorded
+  let hiddenForExport = [];
+  function hideHelpersForExport() {
+    hiddenForExport = [];
+    if (App.renderSettings.hideHelpers === false) return;
+    const hide = (o) => { if (o && o.visible) { hiddenForExport.push(o); o.visible = false; } };
+    hide(App.grid);
+    hide(App.transform);
+    App.sceneObjects.forEach((e) => {
+      const h = e.object3D.userData.__helper;
+      if (h && typeof h === 'object') hide(h);
+    });
+    App.cameraPath.markers.forEach(hide);
+    hide(App.cameraPath.line);
+  }
+  function restoreHelpersAfterExport() {
+    hiddenForExport.forEach((o) => { o.visible = true; });
+    hiddenForExport = [];
+    if (App.transform) App.transform.visible = App.tool !== 'select' && !!App.selected;
+    App.sceneObjects.forEach((e) => {
+      const h = e.object3D.userData.__helper;
+      if (h && typeof h === 'object') h.visible = e.visible !== false;
+    });
+    const g = document.getElementById('envGrid');
+    if (App.grid && g) App.grid.visible = g.checked;
   }
 
   // Export progress bar helpers
@@ -2267,6 +2304,7 @@ async function syncTick() {
       App.activeCamera.aspect = width / height;
       App.activeCamera.updateProjectionMatrix();
 
+      hideHelpersForExport();
       renderFrame();
 
       const stream = App.renderer.domElement.captureStream(
@@ -2353,6 +2391,7 @@ async function syncTick() {
         ?.classList.remove('show');
 
       hideExportBar();
+      restoreHelpersAfterExport();
       restoreExportViewport();
 
       alert(
@@ -2415,6 +2454,7 @@ async function syncTick() {
       ?.classList.remove('show');
 
     hideExportBar();
+    restoreHelpersAfterExport();
   }
 
   // Save the finished recording to the browser's Downloads folder.
@@ -2942,4 +2982,41 @@ function syncFXPanel() {
     }
   `;
   document.head.appendChild(s);
+})();
+
+/* =========================================================================
+   EasyRenderer 3D — Export options (format + hide helpers) in Render Settings
+   ========================================================================= */
+(function installExportOptions() {
+  const applyBtn = document.getElementById('applyRenderSettings');
+  if (!applyBtn || !applyBtn.parentElement || document.getElementById('erExportOptions')) return;
+
+  const box = document.createElement('div');
+  box.id = 'erExportOptions';
+  box.style.cssText = 'display:flex; flex-direction:column; gap:10px; margin:12px 0;';
+  box.innerHTML = `
+    <label style="display:flex; align-items:center; justify-content:space-between; gap:12px; font-size:12px;">
+      <span>Video format</span>
+      <select id="exportFormat" style="min-width:150px;">
+        <option value="mp4">MP4 (recommended)</option>
+        <option value="webm">WebM</option>
+      </select>
+    </label>
+    <label style="display:flex; align-items:center; gap:8px; font-size:12px; cursor:pointer;">
+      <input type="checkbox" id="exportHideHelpers" checked>
+      <span>Hide grid, lines &amp; gizmos while recording</span>
+    </label>`;
+  applyBtn.parentElement.insertBefore(box, applyBtn);
+
+  const fmt = document.getElementById('exportFormat');
+  const hide = document.getElementById('exportHideHelpers');
+  const sync = () => {
+    fmt.value = App.renderSettings.format || 'mp4';
+    hide.checked = App.renderSettings.hideHelpers !== false;
+  };
+  fmt.addEventListener('change', () => { App.renderSettings.format = fmt.value; });
+  hide.addEventListener('change', () => { App.renderSettings.hideHelpers = hide.checked; });
+  const rsBtn = document.getElementById('renderSettingsBtn');
+  if (rsBtn) rsBtn.addEventListener('click', sync);
+  sync();
 })();
