@@ -44,7 +44,7 @@ const App = {
     previewing: false, previewStart: 0, curve: null,
   },
 
-  recorder: { mediaRecorder: null, chunks: [], recording: false, startTime: 0 },
+  recorder: { mediaRecorder: null, chunks: [], recording: false, startTime: 0, endAt: 0, failsafe: null, prevLoop: undefined },
   renderSettings: { width: 1280, height: 720, fps: 30, bitrate: 12 },
   undo: { stack: [], redoStack: [], suppress: false },
   snapping: false,
@@ -63,6 +63,24 @@ const Easing = {
   smooth: (f) => f * f * (3 - 2 * f),
   easeIn: (f) => f * f,
   easeOut: (f) => 1 - (1 - f) * (1 - f),
+};
+
+/* ---------------------------------------------------------------------
+   Cinematic Post-FX state (bloom, vignette, grain, fringe, grade, dust)
+   Declared up here so every function can safely reference it.
+--------------------------------------------------------------------- */
+const FX = {
+  ready: false,
+  composer: null, renderPass: null, bloom: null, output: null, cinema: null,
+  w: 0, h: 0, pr: 0, size: new THREE.Vector2(),
+  dust: null, panel: null,
+  params: {
+    enabled: true,
+    bloom: 0.35, bloomRadius: 0.5, bloomThreshold: 0.85,
+    vignette: 0.35, grain: 0.04, aberration: 0.0015,
+    saturation: 1.08, contrast: 1.05, exposure: 1.05,
+    dust: false,
+  },
 };
 
 /* ---------------------------------------------------------------------
@@ -196,6 +214,9 @@ function initApp() {
   bindCloudUI();
 
   App.renderer.setAnimationLoop(renderLoop);
+
+  // Cinematic post-processing loads in the background; the studio works without it if it fails to load
+  initPostFX();
 }
 
 function onResize() {
@@ -220,12 +241,13 @@ function renderLoop() {
   if (App.timeline.playing) {
     App.timeline.currentTime += delta;
     if (App.timeline.currentTime >= App.timeline.duration) {
-      if (App.timeline.loop) {
+      if (App.timeline.loop && !App.recorder.recording) {
         App.timeline.currentTime = 0;
       } else {
         App.timeline.currentTime = App.timeline.duration;
         setPlaying(false);
-        if (App.recorder.recording) stopRecording();
+        // Timeline finished while exporting: keep rendering a short tail so the last frame is captured, then stop
+        if (App.recorder.recording && !App.recorder.endAt) App.recorder.endAt = performance.now() + 350;
       }
     }
     applyKeyframesAtTime(App.timeline.currentTime);
@@ -235,7 +257,10 @@ function renderLoop() {
   if (App.cameraPath.previewing) stepCameraPathPreview();
   if (App.orbit.enabled !== false) App.orbit.update();
 
-  App.renderer.render(App.scene, App.activeCamera);
+  renderFrame();
+
+  // Auto-stop the export once the timeline has reached its end (and the tail has been rendered)
+  if (App.recorder.recording && App.recorder.endAt && performance.now() >= App.recorder.endAt) stopRecording();
 
   frameCount++;
   const now = performance.now();
@@ -1466,13 +1491,19 @@ function refreshKeyTrack() {
 /* ---------------------------------------------------------------------
    Timeline Transport
 --------------------------------------------------------------------- */
-function togglePlay() { setPlaying(!App.timeline.playing); }
+function togglePlay() {
+  // While exporting, the timeline is driven by the export; pause/resume would stall the recording
+  if (App.recorder.recording) { toast('Export in progress — press Stop to finish early.'); return; }
+  setPlaying(!App.timeline.playing);
+}
 function setPlaying(playing) {
   App.timeline.playing = playing;
   document.getElementById('playBtn').innerHTML = playing ? '<i class="fa-solid fa-pause"></i>' : '<i class="fa-solid fa-play"></i>';
   if (playing) App.clock.getDelta();
 }
 function stopTimeline() {
+  // Pressing Stop during an export ends it now and saves what has been recorded so far
+  if (App.recorder.recording) stopRecording();
   setPlaying(false);
   App.timeline.currentTime = 0;
   applyKeyframesAtTime(0);
@@ -2038,7 +2069,9 @@ async function syncTick() {
 /* =========================================================================
    EasyRenderer 3D — FIX PATCH
    Fixes: foreground tabs, viewport sizing, video export and local download.
-   Paste at the VERY END of your existing app.js.
+   NEW: export now ALWAYS stops by itself when the timeline finishes
+        (loop is forced off while exporting, a tail is rendered so the last
+        frame is captured, and a failsafe timer guarantees it ends).
    ========================================================================= */
 
 (function installEasyRendererFixes() {
@@ -2077,6 +2110,24 @@ async function syncTick() {
       opacity: .65;
       cursor: wait;
     }
+
+    /* Export progress bar (bottom edge of the viewport) */
+    #erExportBar {
+      position: absolute;
+      left: 0; right: 0; bottom: 0;
+      height: 3px;
+      background: rgba(255,255,255,.08);
+      z-index: 40;
+      display: none;
+      pointer-events: none;
+    }
+    #erExportBar.show { display: block; }
+    #erExportBar > div {
+      height: 100%;
+      width: 0;
+      background: linear-gradient(90deg, #e8772d, #ffb36b);
+      box-shadow: 0 0 12px #e8772d;
+    }
   `;
 
   if (!document.getElementById(patchStyle.id)) {
@@ -2112,7 +2163,7 @@ async function syncTick() {
       App.defaultCamera.updateProjectionMatrix();
     }
 
-    App.renderer.render(App.scene, App.activeCamera);
+    renderFrame();
   }
 
   // Select a recording format supported by the current browser.
@@ -2133,6 +2184,42 @@ async function syncTick() {
     }
 
     return '';
+  }
+
+  // Export progress bar helpers
+  function ensureExportBar() {
+    let bar = document.getElementById('erExportBar');
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.id = 'erExportBar';
+      bar.appendChild(document.createElement('div'));
+      const container = document.getElementById('viewportContainer');
+      if (container) container.appendChild(bar);
+    }
+    return bar;
+  }
+  function hideExportBar() {
+    const bar = document.getElementById('erExportBar');
+    if (bar) {
+      bar.classList.remove('show');
+      if (bar.firstChild) bar.firstChild.style.width = '0%';
+    }
+  }
+  function fmtClock(sec) {
+    const s = Math.max(0, Math.floor(sec));
+    return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+  }
+  function tickExportTimer() {
+    if (!App.recorder.recording) { hideExportBar(); return; }
+    const dur = App.timeline.duration || 1;
+    const elapsed = Math.min(dur, (performance.now() - App.recorder.startTime) / 1000);
+    const label = document.getElementById('recTime');
+    if (label) label.textContent = fmtClock(elapsed) + ' / ' + fmtClock(dur);
+    const bar = document.getElementById('erExportBar');
+    if (bar && bar.firstChild) {
+      bar.firstChild.style.width = Math.min(100, (App.timeline.currentTime / dur) * 100) + '%';
+    }
+    requestAnimationFrame(tickExportTimer);
   }
 
   // Start video export.
@@ -2158,6 +2245,7 @@ async function syncTick() {
     const exportButton = document.getElementById('exportBtn');
 
     try {
+      setPlaying(false);
       App.timeline.currentTime = 0;
       applyKeyframesAtTime(0);
       updateTimelineUI();
@@ -2172,13 +2260,14 @@ async function syncTick() {
         Number(App.renderSettings.height) || 720
       );
 
+      App._exportPrevAspect = App.activeCamera.aspect;
       App.renderer.setPixelRatio(1);
       App.renderer.setSize(width, height, false);
 
       App.activeCamera.aspect = width / height;
       App.activeCamera.updateProjectionMatrix();
 
-      App.renderer.render(App.scene, App.activeCamera);
+      renderFrame();
 
       const stream = App.renderer.domElement.captureStream(
         Math.max(1, Number(App.renderSettings.fps) || 30)
@@ -2208,6 +2297,7 @@ async function syncTick() {
       App.recorder.chunks = [];
       App.recorder.recording = true;
       App.recorder.startTime = performance.now();
+      App.recorder.endAt = 0;
 
       recorder.ondataavailable = function (event) {
         if (event.data && event.data.size > 0) {
@@ -2226,15 +2316,30 @@ async function syncTick() {
 
       recorder.start(250);
 
+      // An export must end when the timeline ends: loop is switched off for the duration of the export
+      App.recorder.prevLoop = App.timeline.loop;
+      App.timeline.loop = false;
+      const loopBtn = document.getElementById('loopBtn');
+      if (loopBtn) loopBtn.classList.remove('active');
+
+      // Failsafe: no matter what happens, the recording is closed shortly after the timeline length
+      clearTimeout(App.recorder.failsafe);
+      App.recorder.failsafe = setTimeout(function () {
+        if (App.recorder.recording) stopRecording();
+      }, (App.timeline.duration + 6) * 1000);
+
       if (exportButton) exportButton.disabled = true;
 
       document.getElementById('recIndicator')
         ?.classList.add('show');
 
+      ensureExportBar().classList.add('show');
+      tickExportTimer();
+
       setPlaying(true);
 
       toast(
-        'Recording started. The video will download when recording stops.'
+        'Recording started. It stops automatically at the end of the timeline and downloads.'
       );
 
     } catch (error) {
@@ -2247,6 +2352,7 @@ async function syncTick() {
       document.getElementById('recIndicator')
         ?.classList.remove('show');
 
+      hideExportBar();
       restoreExportViewport();
 
       alert(
@@ -2281,12 +2387,35 @@ async function syncTick() {
         App.recorder.stream = null;
       }
 
-      const button = document.getElementById('exportBtn');
-      if (button) button.disabled = false;
-
+      cleanupExportState();
       restoreExportViewport();
     }
   };
+
+  // Put every export-related setting back to normal.
+  function cleanupExportState() {
+    clearTimeout(App.recorder.failsafe);
+    App.recorder.failsafe = null;
+    App.recorder.endAt = 0;
+    App.recorder.recording = false;
+
+    if (App.recorder.prevLoop !== undefined) {
+      App.timeline.loop = App.recorder.prevLoop;
+      App.recorder.prevLoop = undefined;
+      const loopBtn = document.getElementById('loopBtn');
+      if (loopBtn) loopBtn.classList.toggle('active', App.timeline.loop);
+    }
+
+    if (App.timeline.playing) setPlaying(false);
+
+    const button = document.getElementById('exportBtn');
+    if (button) button.disabled = false;
+
+    document.getElementById('recIndicator')
+      ?.classList.remove('show');
+
+    hideExportBar();
+  }
 
   // Save the finished recording to the browser's Downloads folder.
   function finishExportDownload() {
@@ -2347,15 +2476,9 @@ async function syncTick() {
         App.recorder.stream = null;
       }
 
-      App.recorder.recording = false;
       App.recorder.chunks = [];
 
-      document.getElementById('recIndicator')
-        ?.classList.remove('show');
-
-      const button = document.getElementById('exportBtn');
-      if (button) button.disabled = false;
-
+      cleanupExportState();
       restoreExportViewport();
     }
   }
@@ -2371,4 +2494,452 @@ async function syncTick() {
     });
   });
 
+})();
+
+/* =========================================================================
+   EasyRenderer 3D — CINEMATIC POST-FX (high-end look)
+   Bloom glow, filmic tone-mapping, vignette, film grain, lens fringing,
+   colour grading and optional floating-dust atmosphere.
+   Everything renders through the normal viewport, so video export gets it too.
+   The studio keeps working with the standard renderer if anything fails to load.
+   ========================================================================= */
+
+const FX_PRESETS = {
+  cinematic: { enabled: true, bloom: 0.35, bloomRadius: 0.5, bloomThreshold: 0.85, vignette: 0.35, grain: 0.04, aberration: 0.0015, saturation: 1.08, contrast: 1.05, exposure: 1.05, dust: false },
+  clean:     { enabled: true, bloom: 0.12, bloomRadius: 0.3, bloomThreshold: 0.95, vignette: 0.12, grain: 0.0,  aberration: 0.0,    saturation: 1.0,  contrast: 1.0,  exposure: 1.0,  dust: false },
+  neon:      { enabled: true, bloom: 0.9,  bloomRadius: 0.8, bloomThreshold: 0.55, vignette: 0.5,  grain: 0.05, aberration: 0.003,  saturation: 1.3,  contrast: 1.12, exposure: 1.1,  dust: true  },
+  dreamy:    { enabled: true, bloom: 0.65, bloomRadius: 1.0, bloomThreshold: 0.7,  vignette: 0.3,  grain: 0.03, aberration: 0.0008, saturation: 1.15, contrast: 0.95, exposure: 1.15, dust: true  },
+  off:       { enabled: false, bloom: 0, bloomRadius: 0, bloomThreshold: 1, vignette: 0, grain: 0, aberration: 0, saturation: 1, contrast: 1, exposure: 1.05, dust: false },
+};
+
+const FX_SLIDERS = [
+  ['bloom', 'Bloom glow', 0, 2, 0.01],
+  ['bloomRadius', 'Bloom spread', 0, 1.5, 0.01],
+  ['bloomThreshold', 'Bloom threshold', 0, 1.5, 0.01],
+  ['vignette', 'Vignette', 0, 1, 0.01],
+  ['grain', 'Film grain', 0, 0.2, 0.005],
+  ['aberration', 'Lens fringing', 0, 0.01, 0.0002],
+  ['saturation', 'Saturation', 0, 2, 0.01],
+  ['contrast', 'Contrast', 0.5, 1.6, 0.01],
+  ['exposure', 'Exposure', 0.2, 2.5, 0.01],
+];
+
+const CinemaShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    time: { value: 0 },
+    vignette: { value: 0.35 },
+    grain: { value: 0.04 },
+    aberration: { value: 0.0015 },
+    saturation: { value: 1.08 },
+    contrast: { value: 1.05 },
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform float time;
+    uniform float vignette;
+    uniform float grain;
+    uniform float aberration;
+    uniform float saturation;
+    uniform float contrast;
+    varying vec2 vUv;
+
+    float rnd(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
+    void main() {
+      vec2 c = vUv - 0.5;
+      float d = dot(c, c);
+      vec2 off = c * aberration * d * 6.0;
+
+      vec4 base = texture2D(tDiffuse, vUv);
+      float r = texture2D(tDiffuse, vUv + off).r;
+      float b = texture2D(tDiffuse, vUv - off).b;
+      vec3 col = vec3(r, base.g, b);
+
+      // colour grade
+      float luma = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      col = mix(vec3(luma), col, saturation);
+      col = (col - 0.5) * contrast + 0.5;
+
+      // vignette
+      float v = smoothstep(0.25, 0.95, length(c) * 1.35);
+      col *= 1.0 - vignette * v;
+
+      // film grain (strongest in the mid tones)
+      float n = rnd(vUv * vec2(1920.0, 1080.0) + fract(time) * 97.0) - 0.5;
+      col += n * grain * (1.0 - abs(luma - 0.5));
+
+      gl_FragColor = vec4(max(col, 0.0), base.a);
+    }`,
+};
+
+async function initPostFX() {
+  if (FX.ready) return;
+  try {
+    const [ec, rp, ub, op, sp] = await Promise.all([
+      import('three/addons/postprocessing/EffectComposer.js'),
+      import('three/addons/postprocessing/RenderPass.js'),
+      import('three/addons/postprocessing/UnrealBloomPass.js'),
+      import('three/addons/postprocessing/OutputPass.js'),
+      import('three/addons/postprocessing/ShaderPass.js'),
+    ]);
+
+    loadFXParams();
+
+    const size = App.renderer.getSize(new THREE.Vector2());
+    const target = new THREE.WebGLRenderTarget(Math.max(1, size.x), Math.max(1, size.y), {
+      type: THREE.HalfFloatType,
+      samples: 4, // multisampled so edges stay smooth with post-processing on
+    });
+
+    const composer = new ec.EffectComposer(App.renderer, target);
+    const renderPass = new rp.RenderPass(App.scene, App.activeCamera);
+    const bloom = new ub.UnrealBloomPass(new THREE.Vector2(size.x, size.y), FX.params.bloom, FX.params.bloomRadius, FX.params.bloomThreshold);
+    const output = new op.OutputPass();
+    const cinema = new sp.ShaderPass(CinemaShader);
+
+    composer.addPass(renderPass);
+    composer.addPass(bloom);
+    composer.addPass(output);
+    composer.addPass(cinema);
+
+    FX.composer = composer; FX.renderPass = renderPass; FX.bloom = bloom; FX.output = output; FX.cinema = cinema;
+
+    createDust();
+    buildFXPanel();
+    applyFXParams();
+    FX.ready = true;
+  } catch (err) {
+    console.warn('Post-processing unavailable, using the standard renderer:', err);
+  }
+}
+
+// One call used by the render loop and the export: composer when FX is on, plain renderer otherwise
+function renderFrame() {
+  const t = performance.now() * 0.001;
+
+  if (FX.dust && FX.dust.visible) {
+    FX.dust.rotation.y = t * 0.012;
+    FX.dust.position.y = Math.sin(t * 0.25) * 0.25;
+  }
+
+  if (FX.ready && FX.params.enabled) {
+    App.renderer.getSize(FX.size);
+    const pr = App.renderer.getPixelRatio();
+    if (FX.size.x !== FX.w || FX.size.y !== FX.h || pr !== FX.pr) {
+      FX.w = FX.size.x; FX.h = FX.size.y; FX.pr = pr;
+      if (FX.composer.setPixelRatio) FX.composer.setPixelRatio(pr);
+      FX.composer.setSize(FX.w, FX.h);
+    }
+    FX.renderPass.camera = App.activeCamera;
+    FX.cinema.uniforms.time.value = t % 100;
+    FX.composer.render();
+  } else {
+    App.renderer.render(App.scene, App.activeCamera);
+  }
+}
+
+function createDust() {
+  const n = 600;
+  const pos = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    pos[i * 3] = (Math.random() - 0.5) * 30;
+    pos[i * 3 + 1] = Math.random() * 10;
+    pos[i * 3 + 2] = (Math.random() - 0.5) * 30;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const mat = new THREE.PointsMaterial({
+    color: 0xffd9b0, size: 0.05, transparent: true, opacity: 0.55,
+    depthWrite: false, sizeAttenuation: true, blending: THREE.AdditiveBlending,
+  });
+  const pts = new THREE.Points(geo, mat);
+  pts.frustumCulled = false;
+  pts.visible = false;
+  pts.userData.__fx = true;
+  App.scene.add(pts);
+  FX.dust = pts;
+}
+
+function loadFXParams() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('er_fx') || 'null');
+    if (saved && typeof saved === 'object') Object.assign(FX.params, saved);
+  } catch (e) {}
+}
+function saveFXParams() {
+  try { localStorage.setItem('er_fx', JSON.stringify(FX.params)); } catch (e) {}
+}
+
+function applyFXParams() {
+  const P = FX.params;
+  if (FX.bloom) { FX.bloom.strength = P.bloom; FX.bloom.radius = P.bloomRadius; FX.bloom.threshold = P.bloomThreshold; }
+  if (FX.cinema) {
+    const u = FX.cinema.uniforms;
+    u.vignette.value = P.vignette; u.grain.value = P.grain; u.aberration.value = P.aberration;
+    u.saturation.value = P.saturation; u.contrast.value = P.contrast;
+  }
+  if (App.renderer) App.renderer.toneMappingExposure = P.exposure;
+  if (FX.dust) FX.dust.visible = !!P.dust;
+  syncFXPanel();
+  saveFXParams();
+}
+
+function buildFXPanel() {
+  if (FX.panel) return;
+  const host = document.getElementById('viewportContainer');
+  if (!host) return;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'er-fx';
+  wrap.innerHTML = `
+    <button class="er-fx-toggle" type="button" title="Cinematic effects"><i class="fa-solid fa-wand-magic-sparkles"></i><span>FX</span></button>
+    <div class="er-fx-panel">
+      <div class="er-fx-head">
+        <strong>Cinematic FX</strong>
+        <label class="er-fx-switch"><input type="checkbox" data-fx="enabled"><span></span></label>
+      </div>
+      <div class="er-fx-presets">
+        <button type="button" data-preset="cinematic">Cinematic</button>
+        <button type="button" data-preset="clean">Clean</button>
+        <button type="button" data-preset="neon">Neon</button>
+        <button type="button" data-preset="dreamy">Dreamy</button>
+        <button type="button" data-preset="off">Off</button>
+      </div>
+      <div class="er-fx-sliders"></div>
+      <label class="er-fx-check"><input type="checkbox" data-fx="dust"><span>Atmosphere dust</span></label>
+    </div>`;
+
+  const sliders = wrap.querySelector('.er-fx-sliders');
+  FX_SLIDERS.forEach(([key, label, min, max, step]) => {
+    const row = document.createElement('div');
+    row.className = 'er-fx-row';
+    row.innerHTML = `<span>${label}</span><input type="range" data-fx="${key}" min="${min}" max="${max}" step="${step}"><em></em>`;
+    sliders.appendChild(row);
+  });
+
+  wrap.querySelector('.er-fx-toggle').addEventListener('click', (e) => {
+    e.stopPropagation();
+    wrap.classList.toggle('open');
+  });
+  wrap.addEventListener('click', (e) => e.stopPropagation());
+  wrap.addEventListener('pointerdown', (e) => e.stopPropagation());
+
+  wrap.querySelectorAll('input[data-fx]').forEach((el) => {
+    el.addEventListener('input', () => {
+      const key = el.dataset.fx;
+      FX.params[key] = el.type === 'checkbox' ? el.checked : parseFloat(el.value);
+      applyFXParams();
+    });
+  });
+  wrap.querySelectorAll('button[data-preset]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      Object.assign(FX.params, FX_PRESETS[btn.dataset.preset]);
+      applyFXParams();
+    });
+  });
+
+  host.appendChild(wrap);
+  FX.panel = wrap;
+}
+
+function syncFXPanel() {
+  if (!FX.panel) return;
+  FX.panel.querySelectorAll('input[data-fx]').forEach((el) => {
+    const v = FX.params[el.dataset.fx];
+    if (el.type === 'checkbox') el.checked = !!v;
+    else {
+      el.value = v;
+      const em = el.parentElement.querySelector('em');
+      if (em) em.textContent = Number(v).toFixed(el.dataset.fx === 'aberration' ? 4 : 2);
+    }
+  });
+  FX.panel.classList.toggle('fx-off', !FX.params.enabled);
+}
+
+/* =========================================================================
+   EasyRenderer 3D — VISUAL POLISH
+   Glass panels, glow accents, smooth transitions, animated splash,
+   refined scrollbars and focus states. Pure CSS: nothing is removed or
+   re-wired, so every existing feature behaves exactly as before.
+   ========================================================================= */
+
+(function installVisualPolish() {
+  if (document.getElementById('erPolishStyle')) return;
+  const s = document.createElement('style');
+  s.id = 'erPolishStyle';
+  s.textContent = `
+    :root {
+      --er-accent: #e8772d;
+      --er-accent-2: #ffb36b;
+      --er-glow: rgba(232,119,45,.45);
+    }
+
+    /* ---- smooth, tactile controls ---- */
+    button, .tool-btn, .tab-btn, .btn-ghost, .hierarchy-item, .h-icon-btn, select, input {
+      transition: transform .15s ease, box-shadow .22s ease, background-color .2s ease,
+                  border-color .2s ease, color .2s ease, opacity .2s ease, filter .2s ease;
+    }
+    .tool-btn:hover:not(:disabled), .btn-ghost:hover:not(:disabled) {
+      box-shadow: 0 0 0 1px rgba(232,119,45,.35), 0 6px 20px rgba(232,119,45,.16);
+      transform: translateY(-1px);
+    }
+    .tool-btn:active:not(:disabled), .btn-ghost:active:not(:disabled) { transform: translateY(0) scale(.97); }
+    .tool-btn.active { box-shadow: 0 0 0 1px rgba(232,119,45,.6), 0 0 18px var(--er-glow); }
+    .tab-btn:hover { color: var(--er-accent-2); }
+    .tab-btn.active { box-shadow: inset 0 -2px 0 var(--er-accent); text-shadow: 0 0 12px var(--er-glow); }
+
+    /* ---- hierarchy ---- */
+    .hierarchy-item:hover { background: rgba(232,119,45,.07); }
+    .hierarchy-item.selected {
+      box-shadow: inset 3px 0 0 var(--er-accent), 0 0 22px rgba(232,119,45,.10);
+    }
+
+    /* ---- inputs ---- */
+    input[type="range"] { accent-color: var(--er-accent); }
+    input:focus-visible, select:focus-visible, textarea:focus-visible {
+      outline: none;
+      box-shadow: 0 0 0 2px rgba(232,119,45,.38);
+    }
+
+    /* ---- glass modals ---- */
+    #modalOverlay {
+      backdrop-filter: blur(10px) saturate(1.25);
+      -webkit-backdrop-filter: blur(10px) saturate(1.25);
+      animation: erFade .25s ease;
+    }
+    .modal-card {
+      animation: erPop .3s cubic-bezier(.2,.9,.3,1.15);
+      box-shadow: 0 30px 90px rgba(0,0,0,.65), 0 0 0 1px rgba(255,255,255,.06), 0 0 70px rgba(232,119,45,.08);
+    }
+
+    /* ---- toasts ---- */
+    .toast {
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border-left: 3px solid var(--er-accent);
+      box-shadow: 0 14px 40px rgba(0,0,0,.5), 0 0 24px rgba(232,119,45,.12);
+    }
+
+    /* ---- keyframes on the timeline glow on hover ---- */
+    .keyframe-diamond { filter: drop-shadow(0 0 3px rgba(232,119,45,.55)); }
+    .keyframe-diamond:hover { filter: drop-shadow(0 0 8px rgba(255,179,107,.95)); }
+
+    /* ---- recording indicator pulse ---- */
+    #recIndicator.show { animation: erRec 1.3s ease-in-out infinite; }
+
+    /* ---- studio entrance ---- */
+    #studio.visible { animation: erStudioIn .7s cubic-bezier(.2,.8,.2,1); }
+
+    /* ---- splash: drifting aurora + glowing call-to-action ---- */
+    #splash::before {
+      content: "";
+      position: absolute;
+      inset: -25%;
+      background:
+        radial-gradient(40% 40% at 25% 30%, rgba(232,119,45,.22), transparent 70%),
+        radial-gradient(35% 35% at 75% 65%, rgba(79,163,209,.16), transparent 70%),
+        radial-gradient(30% 30% at 55% 15%, rgba(255,179,107,.12), transparent 70%);
+      filter: blur(50px);
+      animation: erAurora 20s ease-in-out infinite alternate;
+      pointer-events: none;
+      z-index: -1;
+    }
+    #openStudioBtn { animation: erGlow 2.8s ease-in-out infinite; }
+    #openStudioBtn:hover { transform: translateY(-2px) scale(1.02); }
+
+    /* ---- refined scrollbars ---- */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.12); border-radius: 8px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(232,119,45,.55); }
+
+    /* ---- Cinematic FX panel ---- */
+    .er-fx { position: absolute; top: 12px; left: 12px; z-index: 35; font-family: inherit; }
+    .er-fx-toggle {
+      display: flex; align-items: center; gap: 7px;
+      padding: 7px 12px; border-radius: 10px;
+      color: #f3f3f3; font-size: 12px; font-weight: 600; letter-spacing: .04em; cursor: pointer;
+      background: rgba(20,20,22,.62);
+      border: 1px solid rgba(255,255,255,.1);
+      backdrop-filter: blur(14px) saturate(1.3);
+      -webkit-backdrop-filter: blur(14px) saturate(1.3);
+      box-shadow: 0 8px 26px rgba(0,0,0,.4);
+    }
+    .er-fx-toggle i { color: var(--er-accent-2); }
+    .er-fx-toggle:hover { border-color: rgba(232,119,45,.6); box-shadow: 0 8px 26px rgba(0,0,0,.4), 0 0 18px var(--er-glow); }
+    .er-fx.open .er-fx-toggle { border-color: rgba(232,119,45,.7); }
+
+    .er-fx-panel {
+      display: none; margin-top: 8px; width: 270px; padding: 12px 14px 14px;
+      color: #e8e8e8; font-size: 11px;
+      background: rgba(18,18,20,.72);
+      border: 1px solid rgba(255,255,255,.09);
+      border-radius: 14px;
+      backdrop-filter: blur(20px) saturate(1.4);
+      -webkit-backdrop-filter: blur(20px) saturate(1.4);
+      box-shadow: 0 24px 70px rgba(0,0,0,.6), 0 0 40px rgba(232,119,45,.07);
+      animation: erPop .25s cubic-bezier(.2,.9,.3,1.15);
+      max-height: calc(100% - 70px); overflow-y: auto;
+    }
+    .er-fx.open .er-fx-panel { display: block; }
+    .er-fx-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .er-fx-head strong { font-size: 12px; letter-spacing: .06em; text-transform: uppercase; }
+
+    .er-fx-presets { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 12px; }
+    .er-fx-presets button {
+      padding: 4px 9px; font-size: 10.5px; color: #ddd; cursor: pointer;
+      background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.09); border-radius: 999px;
+    }
+    .er-fx-presets button:hover { color: #fff; border-color: rgba(232,119,45,.6); background: rgba(232,119,45,.16); }
+
+    .er-fx-row { display: grid; grid-template-columns: 96px 1fr 38px; align-items: center; gap: 8px; margin-bottom: 7px; }
+    .er-fx-row span { color: #b9b9b9; }
+    .er-fx-row em { font-style: normal; text-align: right; color: var(--er-accent-2); font-variant-numeric: tabular-nums; }
+    .er-fx-row input[type="range"] { width: 100%; }
+    .er-fx.fx-off .er-fx-sliders, .er-fx.fx-off .er-fx-check { opacity: .4; pointer-events: none; }
+
+    .er-fx-check { display: flex; align-items: center; gap: 8px; margin-top: 6px; color: #cfcfcf; cursor: pointer; }
+    .er-fx-check input { accent-color: var(--er-accent); }
+
+    .er-fx-switch { position: relative; width: 34px; height: 18px; display: inline-block; cursor: pointer; }
+    .er-fx-switch input { opacity: 0; width: 0; height: 0; }
+    .er-fx-switch span {
+      position: absolute; inset: 0; border-radius: 999px; background: rgba(255,255,255,.14); transition: background .2s ease;
+    }
+    .er-fx-switch span::after {
+      content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%;
+      background: #fff; transition: transform .2s ease; box-shadow: 0 1px 4px rgba(0,0,0,.4);
+    }
+    .er-fx-switch input:checked + span { background: var(--er-accent); box-shadow: 0 0 12px var(--er-glow); }
+    .er-fx-switch input:checked + span::after { transform: translateX(16px); }
+
+    /* ---- keyframes ---- */
+    @keyframes erFade { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes erPop { from { opacity: 0; transform: translateY(10px) scale(.96); } to { opacity: 1; transform: none; } }
+    @keyframes erStudioIn { from { opacity: 0; transform: scale(.985); } to { opacity: 1; transform: none; } }
+    @keyframes erAurora {
+      0% { transform: translate3d(-3%, -2%, 0) rotate(0deg) scale(1); }
+      100% { transform: translate3d(3%, 3%, 0) rotate(8deg) scale(1.12); }
+    }
+    @keyframes erGlow {
+      0%, 100% { box-shadow: 0 0 0 rgba(232,119,45,0), 0 8px 30px rgba(232,119,45,.18); }
+      50% { box-shadow: 0 0 34px rgba(232,119,45,.5), 0 8px 40px rgba(232,119,45,.3); }
+    }
+    @keyframes erRec {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(255,60,60,.5); }
+      50% { box-shadow: 0 0 0 9px rgba(255,60,60,0); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      #splash::before, #openStudioBtn, #recIndicator.show, #studio.visible { animation: none !important; }
+    }
+  `;
+  document.head.appendChild(s);
 })();
